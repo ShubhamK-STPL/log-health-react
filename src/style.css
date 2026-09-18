@@ -152,6 +152,7 @@ h1 {
   margin: 8px 0;
   background: linear-gradient(135deg, #0f172a 0%, #334155 100%);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -1001,7 +1002,7 @@ code {
 
 .log > summary {
   display: grid;
-  grid-template-columns: 168px 80px 1fr 20px;
+  grid-template-columns: 215px 80px 1fr 20px;
   align-items: start;
   padding: 16px 8px;
   gap: 16px;

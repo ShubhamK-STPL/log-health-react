@@ -1,8 +1,8 @@
 import React,{useMemo,useRef,useState} from 'react';
 import {analyze,filterEntries,group,isError,issueReport,day} from './analysis.mjs';
 const number=n=>n.toLocaleString('en-IN');
-const toIST=t=>{if(t===null)return 'Not recorded';const d=new Date(t);if(isNaN(d.getTime()))return 'Invalid timestamp';return new Date(d.getTime()+5.5*3600000).toISOString().replace('T',' ').slice(0,19)+' IST';};
-const toISTDate=t=>{if(t===null)return 'Unknown';const d=new Date(t);if(isNaN(d.getTime()))return 'Unknown';return new Date(d.getTime()+5.5*3600000).toISOString().slice(0,10);};
+const toIST=t=>{if(t===null)return 'Not recorded';const d=new Date(t);if(isNaN(d.getTime()))return 'Invalid timestamp';const ist=new Date(d.getTime()+5.5*3600000);const pad=n=>String(n).padStart(2,'0');const y=ist.getUTCFullYear(),m=pad(ist.getUTCMonth()+1),day=pad(ist.getUTCDate());let hours=ist.getUTCHours();const mins=pad(ist.getUTCMinutes()),secs=pad(ist.getUTCSeconds()),ampm=hours>=12?'PM':'AM';hours=hours%12||12;return `${y}-${m}-${day} ${pad(hours)}:${mins}:${secs} ${ampm} IST`;};
+const toISTDate=t=>{if(t===null)return 'Unknown';const d=new Date(t);if(isNaN(d.getTime()))return 'Unknown';const ist=new Date(d.getTime()+5.5*3600000);const pad=n=>String(n).padStart(2,'0');return `${ist.getUTCFullYear()}-${pad(ist.getUTCMonth()+1)}-${pad(ist.getUTCDate())}`;};
 const time=toIST;
 const initialFilters={from:'',to:'',query:'',category:'',level:''};
 function download(name,text,type='text/markdown'){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
