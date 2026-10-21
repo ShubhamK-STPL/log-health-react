@@ -466,12 +466,7 @@ export default function App() {
                 </div>
               </section>
             ) : (
-
-
-            {/* ============================================================== */}
-            {/* PAGE 2: SERVER LOG HEALTH DASHBOARD (EXISTING TRIAGE)         */}
-            {/* ============================================================== */}
-            <div className="server-logs-page">
+              <div className="server-logs-page">
                 {/* Secondary filters for Server Logs */}
                 <div className="secondary-filters">
                   <div className="filter-view-toggles" role="group" aria-label="Evidence level toggle">
