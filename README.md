@@ -30,8 +30,10 @@ npm start
 
 ## Workflow
 
-- Upload a JSON-lines `.log`, `.txt`, `.jsonl`, `.ndjson`, or a JSON array `.json`, up to 50 MB. Parsing runs in a worker. Very large files still use browser memory after parsing.
+- Upload a JSON-lines `.log`, `.txt`, `.jsonl`, `.ndjson`, or a JSON array `.json` (including Serilog compact logs and client telemetry recordings), up to 50 MB. Parsing runs in a worker. Very large files still use browser memory after parsing.
+- **Preset sample at the top**: Click `demo.jsonl` to load the included backend log dataset without manual file selection.
 - **From / To date filters are at the top.** Boundaries are inclusive UTC dates and apply to every metric, chart, insight, issue and evidence view. Latest day / Last 7 log days are anchored to the latest timestamp in the uploaded file, not today. All dates clears only the date range. Reset all clears every filter.
+- **Errors Only vs All Records toggle**: Easily switch between failure triage (404s, 500s, exceptions) and the complete event stream (UI interactions, clicks, route transitions, and API requests).
 - Search, level and category filters also apply to the whole dashboard. An “Inspect related logs” action further narrows only the evidence list.
 - Open an issue to see first/last occurrence, logged request/job IDs, affected areas, possible cause, suggested owner, investigation steps and QA checks.
 - Download a single issue brief or the complete action report (Markdown), suitable for adapting into a defect ticket. These exports include sample raw log evidence; review before sharing.
@@ -39,11 +41,11 @@ npm start
 
 ## What makes the analysis actionable
 
-Errors are grouped by a structured `Error` value, otherwise the first exception line, otherwise the message template. Wrapper messages and their identical underlying exception can therefore be grouped together. Literal differences remain separate; the app does not claim groups are unique incidents.
+Errors are grouped by a structured `Error` value, otherwise the first exception line, otherwise the message template. Wrapper messages and their identical underlying exception can therefore be grouped together. For telemetry errors (e.g. `ERR: 404 GET /path?params (45ms)`), latency and varying query parameters are normalized so identical endpoints group into one actionable issue. Literal differences remain separate; the app does not claim groups are unique incidents.
 
 Suggested priority rules:
-1. Explicit missing procedure / missing column errors: Investigate first.
-2. Other issue groups with 10 or more entries: Review next.
+1. Explicit missing procedure / missing column errors / server 500s: Investigate first.
+2. Other issue groups with 10 or more entries (including recurring 404s): Review next.
 3. Remaining issues: Review.
 
 These are editable triage heuristics, not confirmed incident severity. A rare error can still be business-critical. Possible causes, owner suggestions and checklists are defined in `src/analysis.mjs`. They are deterministic rules, not AI diagnoses. The app never applies fixes to your system.
@@ -54,14 +56,14 @@ JSON values are rendered by React as text; there is no HTML evaluation. Invalid 
 
 ## Files
 
-- `src/App.jsx`: React UI, top date filters, file input, manual workflow and exports.
-- `src/analysis.mjs`: parsing, normalization, grouping, playbooks, report generation.
+- `src/App.jsx`: React UI, sample toggle, top date filters, view toggles, file input, manual workflow and exports.
+- `src/analysis.mjs`: parsing, normalization, grouping, playbooks, report generation (supports Serilog and Telemetry).
 - `src/log.worker.js`: browser-local file parsing worker.
-- `src/style.css`: responsive styles.
-- `tests/analysis.test.mjs`: meaningful parsing/grouping/date boundary checks.
-- `examples/demo.jsonl`: synthetic log data; no real customer records.
+- `src/style.css`: responsive styles and telemetry metadata styling.
+- `tests/analysis.test.mjs`: meaningful parsing/grouping/boundary checks for both backend and telemetry logs.
+- `examples/demo.jsonl`: synthetic backend log dataset demonstrating database deadlocks and schema issues.
 - `dist/`: built app, ready for the included local server or static hosting.
-- `serve.mjs`: dependency-free local static server.
+- `serve.mjs`: dependency-free local static server with examples route support.
 
 ## Later API integration
 
