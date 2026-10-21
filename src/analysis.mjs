@@ -244,3 +244,212 @@ export function issueReport(issue, status = 'New'){
   return `# ${issue.category}: ${issue.title}\n\nSuggested triage: ${issue.priority}\nReason: ${issue.reason}\nSuggested owner: ${issue.playbook.owner}\nManual workflow state: ${status}\n\n## Evidence\n- ${issue.count} error entries (${issue.share.toFixed(1)}% of error entries in the selected scope)\n- First: ${toIST(issue.first)}\n- Last: ${toIST(issue.last)}\n- ${issue.requestIds} distinct logged request IDs; ${issue.jobIds} distinct logged job IDs\n- Endpoints: ${issue.paths.map(([p, n]) => `${p} (${n})`).join(', ') || 'No request path recorded'}\n- Source modules: ${issue.modules.map(([p, n]) => `${p} (${n})`).join(', ')}\n\n## Possible cause (not confirmed)\n${issue.playbook.cause}\n\n## Potential impact\n${issue.playbook.impact}\n\n## Investigation\n${issue.playbook.steps.map((x, i) => `${i + 1}. ${x}`).join('\n')}\n\n## QA verification\n${issue.playbook.qa.map(x => `- [ ] ${x}`).join('\n')}\n\n## Sample log evidence\n\`\`\`json\n${JSON.stringify(issue.rows[0].raw, null, 2)}\n\`\`\`\n\nCounts represent logged events, not unique failed operations or affected users. Priorities are rules for triage, not confirmed incident severity. Verification is manual. Snapshot data cannot establish current uptime, error rate, or resolution.\nAll evidence timestamps are shown in Indian Standard Time (IST, 12-hour AM/PM format).\n`;
 }
 
+export function analyzeTelemetry(entries) {
+  const usersMap = new Map();
+  const devicesMap = new Map();
+  const apiMap = new Map();
+  const uiMap = new Map();
+  const routesMap = new Map();
+  const events = [];
+
+  let totalLatency = 0;
+  let latencyCalls = 0;
+  let maxLatency = 0;
+  let apiCallCount = 0;
+  let apiErrorCount = 0;
+
+  for (const r of entries) {
+    const raw = r.raw || {};
+    const evt = raw.event || {};
+    const user = evt.user || raw.user || {};
+    const device = evt.device || raw.device || {};
+    const data = evt.data || raw.extra || {};
+
+    const userName = user.customerName || (user.userId ? `User #${user.userId}` : 'Guest Explorer');
+    const userKey = user.userId || userName;
+    if (!usersMap.has(userKey)) {
+      usersMap.set(userKey, {
+        id: user.userId ?? 0,
+        name: userName,
+        mobile: user.mobileNo || '',
+        partyId: user.partyId ?? 0,
+        actions: 0,
+        errors: 0,
+        devices: new Set(),
+        paths: new Set(),
+        events: []
+      });
+    }
+    const uObj = usersMap.get(userKey);
+    uObj.actions++;
+    if (isError(r)) uObj.errors++;
+    if (device.deviceLabel) uObj.devices.add(device.deviceLabel);
+
+    const responseMsg = data.response?.statusMessage || data.response?.message || null;
+    const responsePayload = data.response || null;
+    const requestUrl = data.url || (evt.action?.match(/(?:GET|POST|PUT|DELETE)\s+([^\s(]+)/i)?.[1]) || '';
+
+    if (device.deviceLabel) {
+      const devKey = device.deviceLabel;
+      if (!devicesMap.has(devKey)) {
+        devicesMap.set(devKey, {
+          label: devKey,
+          platform: device.devicePlatform || 'Unknown',
+          count: 0
+        });
+      }
+      devicesMap.get(devKey).count++;
+    }
+
+    let eventType = 'log';
+    const status = Number(data.status || (evt.action?.match(/ERR:\s*(\d+)/i)?.[1]));
+    const duration = Number(data.durationMs || (evt.action?.match(/\((\d+)ms\)/i)?.[1])) || null;
+
+    if (evt.category === 'ui' || (raw.type === 'ACTION' && evt.data?.tag)) {
+      eventType = 'click';
+      const label = evt.data?.label || evt.action?.replace(/^Clicked\s+[^:]+:\s*"?([^"]*)"?$/i, '$1') || 'Button click';
+      uiMap.set(label, (uiMap.get(label) || 0) + 1);
+    } else if (evt.category === 'navigation' || evt.action?.startsWith('Route transition')) {
+      eventType = 'route';
+      const p = evt.data?.path || r.path || '/';
+      routesMap.set(p, (routesMap.get(p) || 0) + 1);
+    } else if (evt.category === 'api' || (raw.type === 'LOG' && raw.extra?.type?.includes('API')) || evt.action?.includes('REQ:') || evt.action?.includes('ERR:')) {
+      apiCallCount++;
+      if (status >= 400 || isError(r)) {
+        eventType = 'api_error';
+        apiErrorCount++;
+      } else {
+        eventType = 'api_ok';
+      }
+
+      if (duration !== null && !isNaN(duration)) {
+        totalLatency += duration;
+        latencyCalls++;
+        if (duration > maxLatency) maxLatency = duration;
+      }
+
+      const endpoint = r.path || (requestUrl ? requestUrl.split(/[?#]/)[0] : 'Unknown API');
+      if (!apiMap.has(endpoint)) {
+        apiMap.set(endpoint, {
+          endpoint,
+          calls: 0,
+          errors: 0,
+          totalDuration: 0,
+          durationCount: 0,
+          maxDuration: 0,
+          minDuration: Infinity,
+          statuses: new Map(),
+          responseMessages: new Set(),
+          sampleResponse: null,
+          users: new Set()
+        });
+      }
+      const apiItem = apiMap.get(endpoint);
+      apiItem.calls++;
+      if (status >= 400 || isError(r)) apiItem.errors++;
+      if (duration !== null && !isNaN(duration)) {
+        apiItem.totalDuration += duration;
+        apiItem.durationCount++;
+        if (duration > apiItem.maxDuration) apiItem.maxDuration = duration;
+        if (duration < apiItem.minDuration) apiItem.minDuration = duration;
+      }
+      if (status) {
+        apiItem.statuses.set(status, (apiItem.statuses.get(status) || 0) + 1);
+      }
+      if (responseMsg) apiItem.responseMessages.add(responseMsg);
+      if (responsePayload && !apiItem.sampleResponse) apiItem.sampleResponse = responsePayload;
+      if (userName) apiItem.users.add(userName);
+    } else if (isError(r)) {
+      eventType = 'error';
+    }
+
+    const eventObj = {
+      id: r.raw?.RequestId || evt.id || raw.id || `evt-${events.length}`,
+      line: r.line,
+      time: r.time,
+      category: r.category,
+      level: r.level,
+      eventType,
+      message: r.message,
+      pattern: r.pattern,
+      path: r.path,
+      target: evt.target || evt.data?.label || '',
+      status: status || null,
+      duration: duration || null,
+      requestUrl,
+      responseMessage: responseMsg,
+      responsePayload,
+      user: {
+        id: user.userId,
+        name: userName,
+        mobile: user.mobileNo,
+        partyId: user.partyId,
+        unitId: user.unitId,
+        organizationId: user.organizationId,
+        isAuthenticated: user.isAuthenticated ?? false
+      },
+      device: {
+        label: device.deviceLabel || device.devicePlatform || 'Unknown',
+        platform: device.devicePlatform,
+        screen: device.screen,
+        url: device.url,
+        pathname: device.pathname,
+        isOnline: device.isOnline ?? true
+      },
+      breadcrumbs: raw.breadcrumbs || [],
+      raw
+    };
+
+    events.push(eventObj);
+
+    if (usersMap.has(userKey)) {
+      usersMap.get(userKey).events.push(eventObj);
+      if (r.path) usersMap.get(userKey).paths.add(r.path);
+    }
+  }
+
+  const apiList = [...apiMap.values()].map(item => ({
+    ...item,
+    avgDuration: item.durationCount ? Math.round(item.totalDuration / item.durationCount) : 0,
+    minDuration: item.minDuration === Infinity ? 0 : item.minDuration,
+    statusBreakdown: [...item.statuses.entries()].sort((a, b) => b[1] - a[1]),
+    responseMessages: [...item.responseMessages],
+    userList: [...item.users]
+  })).sort((a, b) => b.calls - a.calls);
+
+  const userList = [...usersMap.values()].map(u => {
+    const times = u.events.map(e => e.time).filter(t => t !== null);
+    const firstTime = times.length ? Math.min(...times) : null;
+    const lastTime = times.length ? Math.max(...times) : null;
+    return {
+      ...u,
+      firstTime,
+      lastTime,
+      durationMs: firstTime && lastTime ? Math.max(0, lastTime - firstTime) : 0,
+      deviceCount: u.devices.size,
+      deviceNames: [...u.devices].join(', '),
+      pathsVisited: [...u.paths]
+    };
+  }).sort((a, b) => b.errors - a.errors || b.actions - a.actions);
+
+  const deviceList = [...devicesMap.values()].sort((a, b) => b.count - a.count);
+  const uiList = [...uiMap.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+  const routeList = [...routesMap.entries()].map(([path, count]) => ({ path, count })).sort((a, b) => b.count - a.count);
+
+  return {
+    totalEvents: entries.length,
+    users: userList,
+    devices: deviceList,
+    apiCalls: apiCallCount,
+    apiErrors: apiErrorCount,
+    apiSuccessRate: apiCallCount ? ((apiCallCount - apiErrorCount) / apiCallCount) * 100 : 100,
+    avgLatency: latencyCalls ? Math.round(totalLatency / latencyCalls) : 0,
+    maxLatency,
+    apiList,
+    uiList,
+    routeList,
+    events
+  };
+}
+
+

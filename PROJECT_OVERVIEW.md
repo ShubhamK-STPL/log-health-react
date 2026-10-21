@@ -46,16 +46,20 @@ log-health-react/
 │   ├── assets/                # Minified bundles and web worker assets
 │   └── index.html             # Production entry point
 ├── examples/                  # Sample datasets for testing
-│   └── demo.jsonl             # Synthetic log dataset demonstrating database/backend issues
+│   ├── demo.jsonl             # Synthetic log dataset demonstrating database/backend issues
+│   └── telemetry-2026-10-16.json # Synthetic client session recording with user journeys & 404s
 ├── src/                       # Source code
-│   ├── analysis.mjs           # Data pipeline: normalization, heuristics, playbooks
-│   ├── App.jsx                # Main React UI component and user interactions
+│   ├── analysis.mjs           # Data pipeline: normalization, heuristics, playbooks, telemetry analytics
+│   ├── App.jsx                # Main React UI component, hash router, and server triage view
+│   ├── TelemetryView.jsx      # Dedicated Client Telemetry Studio: session replay & API diagnosis
+│   ├── telemetry-main.jsx     # Standalone mount entry for telemetry.html
 │   ├── log.worker.js          # Web worker wrapper for parsing
 │   ├── main.jsx               # React DOM bootstrap
-│   └── style.css              # Dashboard stylesheet
+│   └── style.css              # Dashboard stylesheet & telemetry flow designs
 ├── tests/                     # Unit & integration tests
-│   └── analysis.test.mjs      # Test suite for parsing, boundaries, grouping
-├── index.html                 # Vite HTML entry point for development
+│   └── analysis.test.mjs      # Test suite for parsing, boundaries, grouping, telemetry
+├── index.html                 # Primary HTML entry point
+├── telemetry.html             # Dedicated standalone HTML page for Client Telemetry Studio
 ├── package.json               # Scripts and dependency specifications
 ├── serve.mjs                  # Native Node.js web server for dist/
 ├── README.md                  # Quickstart guide
@@ -103,16 +107,25 @@ The log processing pipeline is encapsulated inside [`src/analysis.mjs`](file:///
 
 ## 5. UI Features & Capabilities
 
-- **Preset Sample**: One-click toggle buttons in the top header and empty state load `demo.jsonl` (backend Serilog).
-- **View Mode Toggle**: Toggle between `⚠️ Errors only` and `📋 All records` to view either critical failure triage or complete user journey evidence (clicks, route transitions, and API calls).
+- **Dual-Page / Dedicated Workspaces**:
+  - **📱 Client Telemetry Studio** (`#/telemetry` or `telemetry.html`):
+    - **Step-by-Step User Journey Session Replay**: Chronological step chain connecting button clicks, route navigations, and API calls.
+    - **Deep 404/500 Failure Diagnosis**: Automatically surfaces the exact server response messages (e.g. *"No active subscriptions found for this party."*, *"No delivery areas found."*) to diagnose root causes without guesswork.
+    - **API Endpoint Health & Latency Table**: Detailed tracking of total requests, error rates, average and peak latency (with slow call warnings), and status breakdowns.
+    - **User Directory & Device Demographics**: Profiles for authenticated and guest users (Party ID, Mobile, Unit ID, Device model, screen size).
+    - **Interaction Heatbars**: Visual breakdown of top clicked UI elements and most visited routes.
+    - **Forensic Inspector**: Deep drawer on each event node with raw payloads, query parameters, and breadcrumbs.
+  - **🩺 Server Log Health** (`#/server-logs` or `index.html`):
+    - Backend database deadlock triage, missing column playbooks, schema verification, and exception traces.
+- **Preset Dataset Toggles**: Instant 1-click loading for `telemetry-2026-10-16.json` and `demo.jsonl`.
 - **Global UTC / IST Date Filter**: Filter by `From` and `To` dates, or one-click presets (`Latest day`, `Last 7 log days`, `All dates`). All metrics, charts, and issue lists synchronize instantly.
-
 - **Search & Filter Controls**: Filter by free text across all JSON properties, error category, or log level.
 - **Key Metric Indicators**:
   - Selected entries
   - Total error/fatal entries
   - Issue groups
   - Distinct affected endpoints
+
 - **Insights Bar**:
   - *Biggest repeated issue* (percentage of total errors)
   - *Busiest error day* (peak UTC error volume)

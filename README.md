@@ -54,16 +54,34 @@ Counts describe log entries. They do not represent failed-request percentages, u
 
 JSON values are rendered by React as text; there is no HTML evaluation. Invalid records are skipped and reported. Invalid timestamps are excluded from the timeline and from active date filters, but remain available with all dates selected. A file containing no recognizable valid records preserves the previously loaded snapshot.
 
+## Dual-Page Architecture & Workspaces
+
+The application provides two purpose-built workspaces with 1-click toggles and direct URL routing:
+
+1. **📱 Client Telemetry Studio** (`#/telemetry` or `telemetry.html`):
+   - **User Journey Session Replay**: Replay chronological user steps (e.g. `Shubham Kharche`, `Amit`, `Guest Explorer`) with visual flow nodes connecting button clicks, route transitions, and API calls.
+   - **Deep 404/500 Failure Diagnosis**: Automatically extracts backend error messages (e.g. *"No active subscriptions found for this party."*, *"No delivery areas found."*) to eliminate guesswork.
+   - **API Latency & Reliability**: Measures average and peak latencies (with warnings for slow calls > 500ms), call volumes, and failure rates per endpoint.
+   - **UI & Route Heatmap**: Displays top clicked components and visited application screens.
+   - **Forensic Inspector**: Collapsible inspector for query parameters, response JSON payloads, device specs, and breadcrumbs.
+
+2. **🩺 Server Log Health** (`#/server-logs` or `index.html`):
+   - **Backend Exception Triage**: Groups database deadlocks, missing columns, and server exceptions into prioritized triage playbooks with QA verification checklists.
+   - **Global Date & Time Filtering**: Inclusive UTC date boundaries formatted in Indian Standard Time (IST, UTC+05:30).
+
+Switch between them anytime via the top navigation tabs or by dropping/selecting either format (e.g. `telemetry-2026-10-16.json` automatically switches to Telemetry Studio; `demo.jsonl` switches to Server Log Health).
+
 ## Files
 
-- `src/App.jsx`: React UI, sample toggle, top date filters, view toggles, file input, manual workflow and exports.
-- `src/analysis.mjs`: parsing, normalization, grouping, playbooks, report generation (supports Serilog and Telemetry).
-- `src/log.worker.js`: browser-local file parsing worker.
-- `src/style.css`: responsive styles and telemetry metadata styling.
-- `tests/analysis.test.mjs`: meaningful parsing/grouping/boundary checks for both backend and telemetry logs.
-- `examples/demo.jsonl`: synthetic backend log dataset demonstrating database deadlocks and schema issues.
-- `dist/`: built app, ready for the included local server or static hosting.
-- `serve.mjs`: dependency-free local static server with examples route support.
+- `src/App.jsx`: Primary workspace shell, hash-based page router, server log triage view, and state management.
+- `src/TelemetryView.jsx`: Dedicated Client Telemetry Studio with session replay timeline, API diagnostics, and interaction heatbars.
+- `src/analysis.mjs`: High-performance parsing, normalization, grouping, Serilog playbooks, and telemetry analysis engine.
+- `src/log.worker.js`: In-browser background Web Worker for non-blocking file parsing.
+- `src/style.css`: Clean, responsive design system with dark gradients, glassmorphism, and timeline node styling.
+- `telemetry.html`: Standalone HTML entry point for the Client Telemetry Studio.
+- `examples/telemetry-2026-10-16.json`: Synthetic client telemetry recording with user journeys and 404 errors.
+- `examples/demo.jsonl`: Synthetic backend log dataset demonstrating database deadlocks and schema issues.
+- `serve.mjs`: Dependency-free local static server with examples route support.
 
 ## Later API integration
 

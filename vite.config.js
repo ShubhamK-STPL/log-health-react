@@ -4,6 +4,14 @@ import path from 'node:path';
 
 export default defineConfig({
   base: './',
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve('.', 'index.html'),
+        telemetry: path.resolve('.', 'telemetry.html')
+      }
+    }
+  },
   plugins: [
     {
       name: 'serve-examples',

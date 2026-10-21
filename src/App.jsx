@@ -1,5 +1,6 @@
-import React, { useMemo, useRef, useState } from 'react';
-import { analyze, filterEntries, group, isError, issueReport, day } from './analysis.mjs';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { analyze, filterEntries, group, isError, issueReport, day, analyzeTelemetry } from './analysis.mjs';
+import TelemetryView from './TelemetryView.jsx';
 
 const number = n => n.toLocaleString('en-IN');
 
@@ -151,6 +152,29 @@ export default function App() {
   const [selected, setSelected] = useState('');
   const [page, setPage] = useState(0);
 
+  // Separate page routing: 'telemetry' or 'server_logs'
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#/server-logs') return 'server_logs';
+    return 'telemetry';
+  });
+
+  useEffect(() => {
+    const handleHash = () => {
+      const h = window.location.hash;
+      if (h === '#/server-logs') setActiveTab('server_logs');
+      else if (h === '#/telemetry') setActiveTab('telemetry');
+    };
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  const switchPage = tab => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      window.location.hash = tab === 'telemetry' ? '#/telemetry' : '#/server-logs';
+    }
+  };
+
   const input = useRef(null);
   const worker = useRef(null);
   const logs = useRef(null);
@@ -160,15 +184,27 @@ export default function App() {
   const filtered = useMemo(() => filterEntries(all, filters), [all, filters]);
   const a = useMemo(() => analyze(filtered), [filtered]);
   const original = useMemo(() => analyze(all), [all]);
+
+  const isTelemetry = useMemo(
+    () => all.some(r => r.raw?.type === 'ACTION' || r.raw?.type === 'LOG' || r.raw?.event),
+    [all]
+  );
+
+  // Comprehensive telemetry analysis
+  const telemetryData = useMemo(() => {
+    if (!all.length) return null;
+    return analyzeTelemetry(filtered);
+  }, [filtered, all.length]);
+
   const visibleLogs = useMemo(() =>
     filtered
       .filter(r => !selected || r.issueKey === selected)
       .toSorted((x, y) => (y.time ?? -Infinity) - (x.time ?? -Infinity)),
     [filtered, selected]
   );
+
   const biggest = a.issues.toSorted((x, y) => y.count - x.count)[0];
   const peak = a.days.toSorted((x, y) => y[1] - x[1])[0];
-  const isTelemetry = useMemo(() => all.some(r => r.raw?.type === 'ACTION' || r.raw?.type === 'LOG' || r.raw?.event), [all]);
 
   function update(key, value) {
     setFilters(f => ({ ...f, [key]: value }));
@@ -192,7 +228,7 @@ export default function App() {
     }
     loading.current = true;
     setBusy(true);
-    setNotice('Reading and grouping entries…');
+    setNotice('Reading and parsing entries…');
     try {
       worker.current = new Worker(new URL('./log.worker.js', import.meta.url), { type: 'module' });
       worker.current.onmessage = ({ data: result }) => {
@@ -204,8 +240,12 @@ export default function App() {
         setData({ ...result, name: file.name, bytes: file.size });
         setFilters(initialFilters);
         setStatuses({});
-        setSelected('');
-        setPage(0);
+        // Automatically choose the best page based on loaded data
+        const detectedTelemetry = result.entries.some(
+          r => r.raw?.type === 'ACTION' || r.raw?.type === 'LOG' || r.raw?.event
+        );
+        switchPage(detectedTelemetry ? 'telemetry' : 'server_logs');
+
         setNotice(
           result.bad.length
             ? `${number(result.bad.length)} unsupported or malformed records skipped. Source positions: ${result.bad.slice(0, 10).join(', ')}${result.bad.length > 10 ? '…' : ''}.`
@@ -227,7 +267,7 @@ export default function App() {
   async function loadSample(filename) {
     if (loading.current) return;
     setBusy(true);
-    setNotice(`Loading sample ${filename}…`);
+    setNotice(`Loading ${filename}…`);
     try {
       const res = await fetch(`./examples/${filename}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -237,7 +277,7 @@ export default function App() {
       });
       load(file);
     } catch (err) {
-      setNotice(`Could not auto-load ${filename} (${err.message}). You can select or drag-and-drop it from the examples folder.`);
+      setNotice(`Could not auto-fetch ${filename} (${err.message}). You can drag and drop it from the examples folder.`);
       setBusy(false);
     }
   }
@@ -252,8 +292,8 @@ export default function App() {
   }
 
   function exportReport() {
-    const header = `# Log Health snapshot\n\nFile: ${data?.name}\nSelected dates: ${filters.from || 'all'} through ${filters.to || 'all'} (IST)\nOther filters: ${JSON.stringify({ query: filters.query, category: filters.category, level: filters.level })}\n${a.entries} entries; ${a.errors} error/fatal entries; ${a.issues.length} issue groups; ${a.paths.length} paths.\nMalformed source records skipped: ${data?.bad.length || 0}.\nLive health: unknown. Possible causes and priorities are rule-based suggestions, not proven diagnoses.\nAll timestamps formatted in Indian Standard Time (IST, UTC+05:30).\n\n`;
-    download('log-health-action-report.md', header + a.issues.map(i => issueReport(i, statuses[i.key] || 'New')).join('\n---\n'));
+    const header = `# Log & Telemetry Snapshot\n\nFile: ${data?.name}\nActive Mode: ${activeTab === 'telemetry' ? 'Client Telemetry Explorer' : 'Server Log Health'}\nSelected dates: ${filters.from || 'all'} through ${filters.to || 'all'} (IST)\nTotal entries: ${all.length}; Errors: ${a.errors}.\nAll timestamps formatted in Indian Standard Time (IST, UTC+05:30).\n\n`;
+    download('health-report.md', header + a.issues.map(i => issueReport(i, statuses[i.key] || 'New')).join('\n---\n'));
   }
 
   return (
@@ -262,7 +302,24 @@ export default function App() {
         <a className="brand" href="./">
           <span className="brand-icon">∿</span> Log Health
         </a>
-        <span className="edition">INVESTIGATE & ACT</span>
+        <nav className="header-page-nav" aria-label="Page switcher">
+          <button
+            type="button"
+            className={`nav-tab-btn ${activeTab === 'telemetry' ? 'active' : ''}`}
+            onClick={() => switchPage('telemetry')}
+          >
+            <span className="tab-icon">📱</span> Client Telemetry Studio
+            {isTelemetry && data && <span className="tab-pill">Active</span>}
+          </button>
+          <button
+            type="button"
+            className={`nav-tab-btn ${activeTab === 'server_logs' ? 'active' : ''}`}
+            onClick={() => switchPage('server_logs')}
+          >
+            <span className="tab-icon">🩺</span> Server Log Health
+            {!isTelemetry && data && <span className="tab-pill">Active</span>}
+          </button>
+        </nav>
         <span className="pill">
           <span className="pill-dot" />
           IST (UTC+05:30)
@@ -270,365 +327,371 @@ export default function App() {
       </header>
 
       <main>
-        <div className="title-row">
-          <div>
-            <div className="eyebrow">
-              <span className="eyebrow-badge">DIAGNOSTICS & TRIAGE</span> APPLICATION & TELEMETRY WORKSPACE
-            </div>
-            <h1>From errors to next steps.</h1>
-            <p className="muted">Evidence, suggested investigations and QA checks in one place. All times shown in IST.</p>
-          </div>
-
-          <div className="top-action-bar">
-            <div className="sample-toggle-group" role="group" aria-label="Sample log datasets">
-              <span className="toggle-label">Presets:</span>
-              <button
-                type="button"
-                className={`toggle-btn ${data?.name === 'demo.jsonl' ? 'active' : ''}`}
-                disabled={busy}
-                onClick={() => loadSample('demo.jsonl')}
-                title="Load backend database error log sample (demo.jsonl)"
-              >
-                <span className="toggle-icon">📄</span> demo.jsonl
-              </button>
-            </div>
-            <button className="primary-btn" disabled={busy} onClick={() => input.current.click()}>
-              {busy ? 'Reading…' : '↑ Upload log file'}
-            </button>
-            <input aria-label="Upload log file" ref={input} type="file" accept=".log,.txt,.jsonl,.ndjson,.json" hidden onChange={e => load(e.target.files[0])} />
-          </div>
-        </div>
-
-        <section className="top-filters" aria-label="Dashboard date filters">
-          <div className="date-label">
-            <strong>Analysis period</strong>
-            <small>IST timezone · applies to the whole dashboard</small>
-          </div>
-          <label>
-            From
-            <input aria-label="From date" type="date" value={filters.from} onChange={e => update('from', e.target.value)} />
-          </label>
-          <label>
-            To
-            <input aria-label="To date" type="date" value={filters.to} onChange={e => update('to', e.target.value)} />
-          </label>
-          <div className="quick">
-            <button className="secondary" disabled={!data} onClick={() => preset(1)}>Latest day</button>
-            <button className="secondary" disabled={!data} onClick={() => preset(7)}>Last 7 log days</button>
-            <button className="secondary" onClick={() => { setFilters(f => ({ ...f, from: '', to: '' })); setPage(0); setSelected(''); }}>All dates</button>
-          </div>
-        </section>
-        {filters.from && filters.to && filters.from > filters.to && (
-          <p className="warning" role="alert">From date is after To date. Adjust the range to see results.</p>
-        )}
-
-        <div
-          className={`upload-zone ${drag ? 'drag' : ''}`}
-          onDragOver={e => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={e => { e.preventDefault(); setDrag(false); load(e.dataTransfer.files[0]); }}
-        >
-          <div className="upload-meta">
-            <span className="upload-icon">{isTelemetry ? '📱' : '⚡'}</span>
-            <div>
-              <strong>{data ? data.name : 'Drop your log or telemetry file here'}</strong>
-              <p>
-                {data
-                  ? `${number(all.length)} valid records · ${(data.bytes / 1024 / 1024).toFixed(2)} MB ${isTelemetry ? '· Client Telemetry Dataset' : ''} · ${original.first === null ? 'Unknown dates' : `${toISTDate(original.first)} → ${toISTDate(original.last)} IST`}`
-                  : 'JSON-lines (.log / .txt / .jsonl), or a JSON array (.json) · up to 50 MB'}
-              </p>
-            </div>
-          </div>
-          <span className="privacy-badge">🔒 Processed locally in your browser</span>
-        </div>
-        <p className="notice" role="status" aria-live="polite">{notice}</p>
-
-        <section className="health">
-          <div className="health-status">
-            <span className="pulse-indicator" />
-            <b>Live health: unknown</b>
-          </div>
-          <span>
-            {data
-              ? `This snapshot shows recorded ${isTelemetry ? 'telemetry events & errors' : 'application errors'}, not current uptime.`
-              : 'Upload a file or click a preset sample above to begin. No log data leaves your browser.'}
-          </span>
-        </section>
-
-        <div className="secondary-filters">
-          <div className="filter-view-toggles" role="group" aria-label="Evidence level toggle">
-            <button
-              type="button"
-              className={`view-toggle-btn ${filters.level.toLowerCase() === 'error' ? 'active' : ''}`}
-              onClick={() => update('level', filters.level.toLowerCase() === 'error' ? '' : 'Error')}
-            >
-              ⚠️ Errors only {data && <span className="toggle-badge">{number(original.errors)}</span>}
-            </button>
-            <button
-              type="button"
-              className={`view-toggle-btn ${!filters.level ? 'active' : ''}`}
-              onClick={() => update('level', '')}
-            >
-              📋 All records {data && <span className="toggle-badge">{number(all.length)}</span>}
-            </button>
-          </div>
-          <label className="search">
-            Search all evidence
-            <input value={filters.query} onChange={e => update('query', e.target.value)} placeholder="Message, user, endpoint, device, ID…" />
-          </label>
-          <label>
-            Category
-            <select value={filters.category} onChange={e => update('category', e.target.value)}>
-              <option value="">All categories</option>
-              {[...new Set(all.map(r => r.category))].sort().map(x => <option key={x}>{x}</option>)}
-            </select>
-          </label>
-          <label>
-            Level
-            <select value={filters.level} onChange={e => update('level', e.target.value)}>
-              <option value="">All levels</option>
-              {[...new Set(all.map(r => r.level))].sort().map(x => <option key={x}>{x}</option>)}
-            </select>
-          </label>
-          <button className="secondary reset-btn" onClick={() => { setFilters(initialFilters); setSelected(''); setPage(0); }}>
-            Reset all
-          </button>
-        </div>
-
-        <div className="metrics">
-          {[
-            ['Selected entries', a.entries, 'Within every active filter', 'metric-entries'],
-            ['Error / fatal entries', a.errors, 'Events, not failed operations', 'metric-errors'],
-            ['Issue groups', a.issues.length, 'Grouped by underlying root cause', 'metric-issues'],
-            ['Affected endpoints', a.paths.length, 'Distinct paths with recorded events', 'metric-endpoints']
-          ].map(([label, n, help, cls]) => (
-            <article key={label} className={`metric-card ${cls}`}>
-              <span>{label}</span>
-              <strong>{data ? number(n) : '—'}</strong>
-              <small>{help}</small>
-            </article>
-          ))}
-        </div>
-
-        {!data ? (
-          <section className="panel empty-state">
-            <div className="empty-icon-box"><span className="empty-icon">📂</span></div>
-            <h2>Start with a log or telemetry file.</h2>
-            <p>Upload your application error log or client telemetry file to analyze what repeats, where it occurs, and triage actionable next steps.</p>
-            <div className="empty-sample-actions">
-              <span className="muted small">Or test immediately with an included dataset:</span>
-              <div className="empty-sample-buttons">
-                <button className="secondary sample-card-btn" disabled={busy} onClick={() => loadSample('demo.jsonl')}>
-                  <div className="sample-btn-title">📄 Backend Log Sample</div>
-                  <small><code>demo.jsonl</code> · Database deadlocks, missing columns & procedures (Serilog)</small>
-                </button>
+        {activeTab === 'telemetry' ? (
+          data && telemetryData ? (
+            <TelemetryView
+              telemetryData={telemetryData}
+              datasetName={data.name}
+              datasetBytes={data.bytes}
+              onSwitchToServerLogs={() => switchPage('server_logs')}
+              onLoadSample={loadSample}
+              onUploadClick={() => input.current?.click()}
+              busy={busy}
+            />
+          ) : (
+            <section className="panel empty-state">
+              <div className="empty-icon-box"><span className="empty-icon">📱</span></div>
+              <h2>Client Telemetry & User Journey Studio</h2>
+              <p>Replay interactive client sessions, inspect button clicks, track screen transitions, measure API latencies, and diagnose 404/500 failures.</p>
+              <div className="empty-sample-actions">
+                <div className="empty-sample-buttons">
+                  <button className="primary-btn highlight-card" disabled={busy} onClick={() => loadSample('telemetry-2026-10-16.json')}>
+                    <div className="sample-btn-title">📱 Launch Client Telemetry Demo (telemetry-2026-10-16.json)</div>
+                    <small>User journeys (Shubham Kharche, Amit), button clicks, and API 404 diagnosis</small>
+                  </button>
+                  <button className="secondary sample-card-btn" disabled={busy} onClick={() => input.current?.click()}>
+                    <div className="sample-btn-title">↑ Upload Telemetry JSON File</div>
+                    <small>Client session recordings (.json) up to 50 MB</small>
+                  </button>
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
+          )
         ) : (
           <>
-            <div className="insight-grid">
-              <article className="insight insight-rose">
-                <div className="eyebrow">BIGGEST REPEATED ISSUE</div>
-                <h2>{biggest ? `${biggest.share.toFixed(1)}% of error entries` : 'No error entries selected'}</h2>
-                <p>{biggest ? biggest.title : 'Try a wider date range or clear your filters.'}</p>
-                {biggest && <small>{number(biggest.count)} entries share this underlying message. This is not a request failure rate.</small>}
-              </article>
-              <article className="insight insight-amber">
-                <div className="eyebrow">BUSIEST ERROR DAY</div>
-                <h2>{peak ? peak[0] : 'No dated errors'}</h2>
-                <p>{peak ? `${number(peak[1])} recorded error entries on this IST date.` : 'A valid timestamp is needed for the timeline.'}</p>
-                <small>Volume reflects the supplied log coverage, not traffic-normalized reliability.</small>
-              </article>
-              <article className="insight insight-cyan">
-                <div className="eyebrow">INVESTIGATION COVERAGE</div>
-                <h2>{a.traceCoverage.toFixed(0)}% have request / event IDs</h2>
-                <p>{number(a.withoutPath)} error entries have no request path.</p>
-                <small>
-                  {isTelemetry
-                    ? 'Client events include user IDs, device and session IDs.'
-                    : `Background jobs may use job IDs instead. ${a.missingTime} selected entries have no valid timestamp.`}
-                </small>
-              </article>
+            {/* Title and Top Action Presets */}
+            <div className="title-row">
+              <div>
+                <div className="eyebrow">
+                  <span className="eyebrow-badge">SERVER LOG HEALTH & TRIAGE</span>
+                  LOG HEALTH WORKSPACE
+                </div>
+                <h1>From errors to next steps.</h1>
+                <p className="muted">
+                  Evidence, suggested investigations and QA checks in one place. All times shown in IST.
+                </p>
+              </div>
+
+              <div className="top-action-bar">
+                <div className="sample-toggle-group" role="group" aria-label="Dataset presets">
+                  <span className="toggle-label">Presets:</span>
+                  <button
+                    type="button"
+                    className={`toggle-btn ${data?.name === 'demo.jsonl' ? 'active' : ''}`}
+                    disabled={busy}
+                    onClick={() => loadSample('demo.jsonl')}
+                    title="Load backend database error logs (deadlocks, missing columns)"
+                  >
+                    <span className="toggle-icon">📄</span> demo.jsonl
+                  </button>
+                  <button
+                    type="button"
+                    className={`toggle-btn ${data?.name === 'telemetry-2026-10-16.json' ? 'active' : ''}`}
+                    disabled={busy}
+                    onClick={() => loadSample('telemetry-2026-10-16.json')}
+                    title="Load client telemetry sample"
+                  >
+                    <span className="toggle-icon">📱</span> telemetry-2026-10-16.json
+                  </button>
+                </div>
+                <button className="primary-btn" disabled={busy} onClick={() => input.current.click()}>
+                  {busy ? 'Reading…' : '↑ Upload file'}
+                </button>
+                <input aria-label="Upload file" ref={input} type="file" accept=".log,.txt,.jsonl,.ndjson,.json" hidden onChange={e => load(e.target.files[0])} />
+              </div>
             </div>
 
-            <section className="panel action-panel">
-              <div className="panel-head">
-                <div>
-                  <div className="eyebrow">START HERE</div>
-                  <h2>Prioritized investigation queue</h2>
-                  <p className="muted">Suggested triage, not incident severity. Open an issue for evidence and a concrete checklist.</p>
-                </div>
-                <button className="secondary export-btn" disabled={!a.issues.length} onClick={exportReport}>
-                  Export action report (IST) ↓
-                </button>
+            {/* Global Date Filters */}
+            <section className="top-filters" aria-label="Dashboard date filters">
+              <div className="date-label">
+                <strong>Analysis period</strong>
+                <small>IST timezone · applies across dashboard</small>
               </div>
-              {a.issues.length ? (
-                a.issues.map(i => (
-                  <Issue
-                    key={i.key}
-                    issue={i}
-                    status={statuses[i.key] || 'New'}
-                    onStatus={s => setStatuses(old => ({ ...old, [i.key]: s }))}
-                    onInspect={() => {
-                      setSelected(i.key);
-                      setPage(0);
-                      logs.current.scrollIntoView({ behavior: 'smooth' });
-                    }}
-                  />
-                ))
-              ) : (
-                <p className="empty">No error-level entries match this selection. This does not establish that the app is healthy.</p>
-              )}
+              <label>
+                From
+                <input aria-label="From date" type="date" value={filters.from} onChange={e => update('from', e.target.value)} />
+              </label>
+              <label>
+                To
+                <input aria-label="To date" type="date" value={filters.to} onChange={e => update('to', e.target.value)} />
+              </label>
+              <div className="quick">
+                <button className="secondary" disabled={!data} onClick={() => preset(1)}>Latest day</button>
+                <button className="secondary" disabled={!data} onClick={() => preset(7)}>Last 7 log days</button>
+                <button className="secondary" onClick={() => { setFilters(f => ({ ...f, from: '', to: '' })); setPage(0); setSelected(''); }}>All dates</button>
+              </div>
             </section>
+            {filters.from && filters.to && filters.from > filters.to && (
+              <p className="warning" role="alert">From date is after To date. Adjust the range to see results.</p>
+            )}
 
-            <div className="two-col chart-panels">
-              <section className="panel">
-                <div className="panel-head">
-                  <h2>Activity timeline</h2>
-                  <span className="muted small">Recorded dates · IST</span>
+            {/* Upload Zone */}
+            <div
+              className={`upload-zone ${drag ? 'drag' : ''}`}
+              onDragOver={e => { e.preventDefault(); setDrag(true); }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={e => { e.preventDefault(); setDrag(false); load(e.dataTransfer.files[0]); }}
+            >
+              <div className="upload-meta">
+                <span className="upload-icon">⚡</span>
+                <div>
+                  <strong>{data ? data.name : 'Drop your server log file here'}</strong>
+                  <p>
+                    {data
+                      ? `${number(all.length)} valid records · ${(data.bytes / 1024 / 1024).toFixed(2)} MB · ${original.first === null ? 'Unknown dates' : `${toISTDate(original.first)} → ${toISTDate(original.last)} IST`}`
+                      : 'JSON-lines (.log, .txt, .jsonl), or JSON array (.json) · up to 50 MB'}
+                  </p>
                 </div>
-                <div className="chart">
-                  {a.days.length ? (
-                    a.days.map(([d, n]) => (
-                      <button
-                        key={d}
-                        className="bar-column"
-                        title={`${d}: ${n} entries. Click to filter to this day.`}
-                        onClick={() => {
-                          setFilters(f => ({ ...f, from: d, to: d }));
+              </div>
+              <span className="privacy-badge">🔒 In-browser local processing</span>
+            </div>
+            <p className="notice" role="status" aria-live="polite">{notice}</p>
+
+            {!data ? (
+              <section className="panel empty-state">
+                <div className="empty-icon-box"><span className="empty-icon">📂</span></div>
+                <h2>Choose a dataset to explore.</h2>
+                <p>Upload your own log file or click a preset below to test immediately:</p>
+                <div className="empty-sample-actions">
+                  <div className="empty-sample-buttons">
+                    <button className="secondary sample-card-btn highlight-card" disabled={busy} onClick={() => loadSample('demo.jsonl')}>
+                      <div className="sample-btn-title">📄 Backend Server Log (demo.jsonl)</div>
+                      <small>Database deadlocks, missing columns & procedures triage (Serilog)</small>
+                    </button>
+                    <button className="secondary sample-card-btn" disabled={busy} onClick={() => loadSample('telemetry-2026-10-16.json')}>
+                      <div className="sample-btn-title">📱 Client Telemetry (telemetry-2026-10-16.json)</div>
+                      <small>User journeys (Shubham Kharche, Amit), button clicks, route transitions, and API 404s</small>
+                    </button>
+                  </div>
+                </div>
+              </section>
+            ) : (
+
+
+            {/* ============================================================== */}
+            {/* PAGE 2: SERVER LOG HEALTH DASHBOARD (EXISTING TRIAGE)         */}
+            {/* ============================================================== */}
+            <div className="server-logs-page">
+                {/* Secondary filters for Server Logs */}
+                <div className="secondary-filters">
+                  <div className="filter-view-toggles" role="group" aria-label="Evidence level toggle">
+                    <button
+                      type="button"
+                      className={`view-toggle-btn ${filters.level.toLowerCase() === 'error' ? 'active' : ''}`}
+                      onClick={() => update('level', filters.level.toLowerCase() === 'error' ? '' : 'Error')}
+                    >
+                      ⚠️ Errors only {data && <span className="toggle-badge">{number(original.errors)}</span>}
+                    </button>
+                    <button
+                      type="button"
+                      className={`view-toggle-btn ${!filters.level ? 'active' : ''}`}
+                      onClick={() => update('level', '')}
+                    >
+                      📋 All records {data && <span className="toggle-badge">{number(all.length)}</span>}
+                    </button>
+                  </div>
+                  <label className="search">
+                    Search all evidence
+                    <input value={filters.query} onChange={e => update('query', e.target.value)} placeholder="Message, user, endpoint, device, ID…" />
+                  </label>
+                  <label>
+                    Category
+                    <select value={filters.category} onChange={e => update('category', e.target.value)}>
+                      <option value="">All categories</option>
+                      {[...new Set(all.map(r => r.category))].sort().map(x => <option key={x}>{x}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    Level
+                    <select value={filters.level} onChange={e => update('level', e.target.value)}>
+                      <option value="">All levels</option>
+                      {[...new Set(all.map(r => r.level))].sort().map(x => <option key={x}>{x}</option>)}
+                    </select>
+                  </label>
+                  <button className="secondary reset-btn" onClick={() => { setFilters(initialFilters); setSelected(''); setPage(0); }}>
+                    Reset all
+                  </button>
+                </div>
+
+                <div className="metrics">
+                  {[
+                    ['Selected entries', a.entries, 'Within every active filter', 'metric-entries'],
+                    ['Error / fatal entries', a.errors, 'Events, not failed operations', 'metric-errors'],
+                    ['Issue groups', a.issues.length, 'Grouped by underlying root cause', 'metric-issues'],
+                    ['Affected endpoints', a.paths.length, 'Distinct paths with recorded events', 'metric-endpoints']
+                  ].map(([label, n, help, cls]) => (
+                    <article key={label} className={`metric-card ${cls}`}>
+                      <span>{label}</span>
+                      <strong>{data ? number(n) : '—'}</strong>
+                      <small>{help}</small>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="insight-grid">
+                  <article className="insight insight-rose">
+                    <div className="eyebrow">BIGGEST REPEATED ISSUE</div>
+                    <h2>{biggest ? `${biggest.share.toFixed(1)}% of error entries` : 'No error entries selected'}</h2>
+                    <p>{biggest ? biggest.title : 'Try a wider date range or clear your filters.'}</p>
+                    {biggest && <small>{number(biggest.count)} entries share this underlying message.</small>}
+                  </article>
+                  <article className="insight insight-amber">
+                    <div className="eyebrow">BUSIEST ERROR DAY</div>
+                    <h2>{peak ? peak[0] : 'No dated errors'}</h2>
+                    <p>{peak ? `${number(peak[1])} recorded error entries on this IST date.` : 'A valid timestamp is needed for the timeline.'}</p>
+                    <small>Volume reflects the supplied log coverage.</small>
+                  </article>
+                  <article className="insight insight-cyan">
+                    <div className="eyebrow">INVESTIGATION COVERAGE</div>
+                    <h2>{a.traceCoverage.toFixed(0)}% have request / event IDs</h2>
+                    <p>{number(a.withoutPath)} error entries have no request path.</p>
+                    <small>Identified across request IDs and session tokens.</small>
+                  </article>
+                </div>
+
+                <section className="panel action-panel">
+                  <div className="panel-head">
+                    <div>
+                      <div className="eyebrow">START HERE</div>
+                      <h2>Prioritized investigation queue</h2>
+                      <p className="muted">Suggested triage, not incident severity. Open an issue for evidence and a concrete checklist.</p>
+                    </div>
+                    <button className="secondary export-btn" disabled={!a.issues.length} onClick={exportReport}>
+                      Export action report (IST) ↓
+                    </button>
+                  </div>
+                  {a.issues.length ? (
+                    a.issues.map(i => (
+                      <Issue
+                        key={i.key}
+                        issue={i}
+                        status={statuses[i.key] || 'New'}
+                        onStatus={s => setStatuses(old => ({ ...old, [i.key]: s }))}
+                        onInspect={() => {
+                          setSelected(i.key);
                           setPage(0);
-                          setSelected('');
+                          logs.current.scrollIntoView({ behavior: 'smooth' });
                         }}
-                      >
-                        <b>{number(n)}</b>
-                        <span className="bar" style={{ height: `${Math.max(6, (130 * n) / (peak ? peak[1] : 1))}px` }} />
-                        <small>{d.slice(5)}</small>
-                      </button>
+                      />
                     ))
                   ) : (
-                    <p className="empty">No timestamped entries in this selection.</p>
+                    <p className="empty">No error-level entries match this selection.</p>
                   )}
-                </div>
-                <p className="muted small">Click a day to investigate it. Missing dates are not evidence of uptime.</p>
-              </section>
+                </section>
 
-              <section className="panel">
-                <div className="panel-head">
-                  <h2>Categories</h2>
-                  <span className="muted small">Rule-based distribution</span>
-                </div>
-                <Bars items={a.categories} />
-              </section>
-            </div>
-
-            <div className="two-col chart-panels">
-              <section className="panel">
-                <h2>Top affected endpoints / routes</h2>
-                <Bars items={a.paths.slice(0, 5)} />
-              </section>
-              <section className="panel">
-                <h2>Top sources / targets</h2>
-                <Bars items={a.modules.slice(0, 5)} />
-              </section>
-            </div>
-
-            <section className="panel" ref={logs}>
-              <div className="panel-head">
-                <div>
-                  <h2>Log evidence</h2>
-                  <p className="muted">{number(visibleLogs.length)} entries · newest first · all timestamps in IST (UTC+05:30)</p>
-                </div>
-                {selected && (
-                  <button className="secondary" onClick={() => { setSelected(''); setPage(0); }}>
-                    Clear issue selection ×
-                  </button>
-                )}
-              </div>
-
-              {visibleLogs.slice(page * 20, (page + 1) * 20).map((r, i) => {
-                const user = r.raw.event?.user || r.raw.user;
-                const dev = r.raw.event?.device || r.raw.device;
-                const target = r.raw.event?.target || r.raw.event?.data?.label;
-                const status = r.raw.event?.data?.status || r.raw.extra?.status;
-                const dur = r.raw.event?.data?.durationMs || r.raw.extra?.durationMs;
-                return (
-                  <details className="log" key={`${r.line}-${i}`}>
-                    <summary>
-                      <span className="small muted log-time">{time(r.time)}</span>
-                      <span className={`level level-${String(r.level).toLowerCase()}`}>{r.level}</span>
-                      <span className="log-title">
-                        {r.message}
-                        <small>{r.path || r.module}</small>
-                      </span>
-                      <span className="chevron">⌄</span>
-                    </summary>
-                    <div className="log-body">
-                      <div className="log-meta-bar">
-                        <span className="issue-cat-tag">{r.category}</span>
-                        <span className="muted">Source record {r.line}</span>
-                        {status && (
-                          <span className={`status-badge status-${status >= 400 ? 'err' : 'ok'}`}>
-                            HTTP {status} {dur ? `(${dur}ms)` : ''}
-                          </span>
-                        )}
-                        {user?.customerName && (
-                          <span className="user-badge">
-                            👤 {user.customerName} {user.userId ? `(#${user.userId})` : ''}
-                          </span>
-                        )}
-                        {dev?.deviceLabel && <span className="device-badge">📱 {dev.deviceLabel}</span>}
-                        {target && <span className="target-badge">🎯 {target}</span>}
-                      </div>
-                      {r.raw['@x'] && (
-                        <>
-                          <h3>Exception / stack trace</h3>
-                          <pre className="trace-box">{r.raw['@x']}</pre>
-                        </>
-                      )}
-                      {r.raw.breadcrumbs?.length > 0 && (
-                        <>
-                          <h3>Breadcrumb trail ({r.raw.breadcrumbs.length})</h3>
-                          <ul className="breadcrumbs-list">
-                            {r.raw.breadcrumbs.map((b, bi) => (
-                              <li key={bi}>
-                                <span className="small muted">{time(Date.parse(b.timestamp))}</span>{' '}
-                                <span className="cat-chip">{b.category}</span> {b.message}
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      )}
-                      <h3>Full record</h3>
-                      <pre className="json-box">{JSON.stringify(r.raw, null, 2)}</pre>
+                <div className="two-col chart-panels">
+                  <section className="panel">
+                    <div className="panel-head">
+                      <h2>Activity timeline</h2>
+                      <span className="muted small">Recorded dates · IST</span>
                     </div>
-                  </details>
-                );
-              })}
+                    <div className="chart">
+                      {a.days.length ? (
+                        a.days.map(([d, n]) => (
+                          <button
+                            key={d}
+                            className="bar-column"
+                            title={`${d}: ${n} entries. Click to filter.`}
+                            onClick={() => {
+                              setFilters(f => ({ ...f, from: d, to: d }));
+                              setPage(0);
+                              setSelected('');
+                            }}
+                          >
+                            <b>{number(n)}</b>
+                            <span className="bar" style={{ height: `${Math.max(6, (130 * n) / (peak ? peak[1] : 1))}px` }} />
+                            <small>{d.slice(5)}</small>
+                          </button>
+                        ))
+                      ) : (
+                        <p className="empty">No timestamped entries in this selection.</p>
+                      )}
+                    </div>
+                  </section>
 
-              {!visibleLogs.length && <p className="empty">No matching entries.</p>}
-
-              <div className="pagination">
-                <span>
-                  {visibleLogs.length
-                    ? `${page * 20 + 1}–${Math.min((page + 1) * 20, visibleLogs.length)} of ${number(visibleLogs.length)}`
-                    : '0 entries'}
-                </span>
-                <div>
-                  <button className="secondary" disabled={page === 0} onClick={() => setPage(p => p - 1)}>
-                    ← Previous
-                  </button>
-                  <button className="secondary" disabled={(page + 1) * 20 >= visibleLogs.length} onClick={() => setPage(p => p + 1)}>
-                    Next →
-                  </button>
+                  <section className="panel">
+                    <div className="panel-head">
+                      <h2>Categories</h2>
+                      <span className="muted small">Rule-based distribution</span>
+                    </div>
+                    <Bars items={a.categories} />
+                  </section>
                 </div>
+
+                <div className="two-col chart-panels">
+                  <section className="panel">
+                    <h2>Top affected endpoints / routes</h2>
+                    <Bars items={a.paths.slice(0, 5)} />
+                  </section>
+                  <section className="panel">
+                    <h2>Top sources / targets</h2>
+                    <Bars items={a.modules.slice(0, 5)} />
+                  </section>
+                </div>
+
+                <section className="panel" ref={logs}>
+                  <div className="panel-head">
+                    <div>
+                      <h2>Log evidence</h2>
+                      <p className="muted">{number(visibleLogs.length)} entries · newest first · IST</p>
+                    </div>
+                    {selected && (
+                      <button className="secondary" onClick={() => { setSelected(''); setPage(0); }}>
+                        Clear issue selection ×
+                      </button>
+                    )}
+                  </div>
+
+                  {visibleLogs.slice(page * 20, (page + 1) * 20).map((r, i) => (
+                    <details className="log" key={`${r.line}-${i}`}>
+                      <summary>
+                        <span className="small muted log-time">{time(r.time)}</span>
+                        <span className={`level level-${String(r.level).toLowerCase()}`}>{r.level}</span>
+                        <span className="log-title">
+                          {r.message}
+                          <small>{r.path || r.module}</small>
+                        </span>
+                        <span className="chevron">⌄</span>
+                      </summary>
+                      <div className="log-body">
+                        <strong><span className="issue-cat-tag">{r.category}</span> · source record {r.line}</strong>
+                        {r.raw['@x'] && (
+                          <>
+                            <h3>Exception / stack trace</h3>
+                            <pre className="trace-box">{r.raw['@x']}</pre>
+                          </>
+                        )}
+                        <h3>Full record</h3>
+                        <pre className="json-box">{JSON.stringify(r.raw, null, 2)}</pre>
+                      </div>
+                    </details>
+                  ))}
+
+                  {!visibleLogs.length && <p className="empty">No matching entries.</p>}
+
+                  <div className="pagination">
+                    <span>
+                      {visibleLogs.length
+                        ? `${page * 20 + 1}–${Math.min((page + 1) * 20, visibleLogs.length)} of ${number(visibleLogs.length)}`
+                        : '0 entries'}
+                    </span>
+                    <div>
+                      <button className="secondary" disabled={page === 0} onClick={() => setPage(p => p - 1)}>
+                        ← Previous
+                      </button>
+                      <button className="secondary" disabled={(page + 1) * 20 >= visibleLogs.length} onClick={() => setPage(p => p + 1)}>
+                        Next →
+                      </button>
+                    </div>
+                  </div>
+                </section>
               </div>
-            </section>
+            )}
           </>
         )}
 
         <footer>
-          <span>Log & Telemetry analysis · rules are transparent and editable · all timestamps in Indian Standard Time (IST)</span>
+          <span>Log & Telemetry analysis · rules are transparent and editable · Indian Standard Time (IST)</span>
           <span>New upload replaces data and workflow choices. Reload clears the session.</span>
         </footer>
       </main>
