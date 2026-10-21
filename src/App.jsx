@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { analyze, filterEntries, group, isError, issueReport, day, analyzeTelemetry } from './analysis.mjs';
+import { parseLog, analyze, filterEntries, group, isError, issueReport, day, analyzeTelemetry } from './analysis.mjs';
 import TelemetryView from './TelemetryView.jsx';
 
 const number = n => n.toLocaleString('en-IN');
@@ -220,65 +220,63 @@ export default function App() {
     if (input.current) input.current.value = '';
   }
 
+  function applyParsedData(file, result) {
+    setData({ ...result, name: file.name, bytes: file.size });
+    setFilters(initialFilters);
+    setStatuses({});
+    const detectedTelemetry = result.entries.some(
+      r => r.raw?.type === 'ACTION' || r.raw?.type === 'LOG' || r.raw?.event
+    );
+    switchPage(detectedTelemetry ? 'telemetry' : 'server_logs');
+    setNotice(
+      result.bad?.length
+        ? `${number(result.bad.length)} unsupported or malformed records skipped. Source positions: ${result.bad.slice(0, 10).join(', ')}${result.bad.length > 10 ? '…' : ''}.`
+        : ''
+    );
+    finish();
+  }
+
+  async function parseDirectly(file) {
+    try {
+      const text = await file.text();
+      const result = parseLog(text);
+      if (!result.entries || !result.entries.length) {
+        setNotice((result.message || 'No supported log or telemetry records found.') + ' Please check file format.');
+        finish();
+        return;
+      }
+      applyParsedData(file, result);
+    } catch (err) {
+      setNotice(`Could not read file (${err.message}). Please ensure it is a valid text, log, or JSON file.`);
+      finish();
+    }
+  }
+
   function load(file) {
     if (!file || loading.current) return;
     if (file.size > 50 * 1024 * 1024) {
-      setNotice('Choose a file up to 50 MB. Your current snapshot has been kept.');
+      setNotice('Choose a file up to 50 MB.');
       return;
     }
     loading.current = true;
     setBusy(true);
     setNotice('Reading and parsing entries…');
+
     try {
       worker.current = new Worker(new URL('./log.worker.js', import.meta.url), { type: 'module' });
       worker.current.onmessage = ({ data: result }) => {
-        if (!result.ok || !result.entries.length) {
-          setNotice((result.message || 'No supported log or telemetry records found.') + ' Your previous snapshot has been kept.');
-          finish();
+        if (!result.ok || !result.entries || !result.entries.length) {
+          parseDirectly(file);
           return;
         }
-        setData({ ...result, name: file.name, bytes: file.size });
-        setFilters(initialFilters);
-        setStatuses({});
-        // Automatically choose the best page based on loaded data
-        const detectedTelemetry = result.entries.some(
-          r => r.raw?.type === 'ACTION' || r.raw?.type === 'LOG' || r.raw?.event
-        );
-        switchPage(detectedTelemetry ? 'telemetry' : 'server_logs');
-
-        setNotice(
-          result.bad.length
-            ? `${number(result.bad.length)} unsupported or malformed records skipped. Source positions: ${result.bad.slice(0, 10).join(', ')}${result.bad.length > 10 ? '…' : ''}.`
-            : ''
-        );
-        finish();
+        applyParsedData(file, result);
       };
       worker.current.onerror = () => {
-        setNotice('Could not read this file. Your previous snapshot has been kept.');
-        finish();
+        parseDirectly(file);
       };
       worker.current.postMessage(file);
     } catch {
-      setNotice('Could not start file reading. Please run the app through its local web server.');
-      finish();
-    }
-  }
-
-  async function loadSample(filename) {
-    if (loading.current) return;
-    setBusy(true);
-    setNotice(`Loading ${filename}…`);
-    try {
-      const res = await fetch(`./examples/${filename}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      const file = new File([text], filename, {
-        type: filename.endsWith('.json') ? 'application/json' : 'text/plain'
-      });
-      load(file);
-    } catch (err) {
-      setNotice(`Could not auto-fetch ${filename} (${err.message}). You can drag and drop it from the examples folder.`);
-      setBusy(false);
+      parseDirectly(file);
     }
   }
 
@@ -327,39 +325,86 @@ export default function App() {
       </header>
 
       <main>
-        {activeTab === 'telemetry' ? (
-          data && telemetryData ? (
-            <TelemetryView
-              telemetryData={telemetryData}
-              datasetName={data.name}
-              datasetBytes={data.bytes}
-              onSwitchToServerLogs={() => switchPage('server_logs')}
-              onLoadSample={loadSample}
-              onUploadClick={() => input.current?.click()}
-              busy={busy}
-            />
-          ) : (
-            <section className="panel empty-state">
-              <div className="empty-icon-box"><span className="empty-icon">📱</span></div>
-              <h2>Client Telemetry & User Journey Studio</h2>
-              <p>Replay interactive client sessions, inspect button clicks, track screen transitions, measure API latencies, and diagnose 404/500 failures.</p>
-              <div className="empty-sample-actions">
-                <div className="empty-sample-buttons">
-                  <button className="primary-btn highlight-card" disabled={busy} onClick={() => loadSample('telemetry-2026-10-16.json')}>
-                    <div className="sample-btn-title">📱 Launch Client Telemetry Demo (telemetry-2026-10-16.json)</div>
-                    <small>User journeys (Shubham Kharche, Amit), button clicks, and API 404 diagnosis</small>
-                  </button>
-                  <button className="secondary sample-card-btn" disabled={busy} onClick={() => input.current?.click()}>
-                    <div className="sample-btn-title">↑ Upload Telemetry JSON File</div>
-                    <small>Client session recordings (.json) up to 50 MB</small>
-                  </button>
-                </div>
+        {/* Hidden persistent file input - always accessible via input.current.click() */}
+        <input
+          aria-label="Upload file"
+          ref={input}
+          type="file"
+          accept=".log,.txt,.jsonl,.ndjson,.json"
+          style={{ display: 'none' }}
+          onClick={e => { e.target.value = ''; }}
+          onChange={e => {
+            if (e.target.files && e.target.files[0]) {
+              load(e.target.files[0]);
+            }
+          }}
+        />
+
+        {!data ? (
+          <section className="panel upload-hero-panel">
+            <div
+              className={`unified-drop-zone ${drag ? 'drag' : ''}`}
+              onDragOver={e => { e.preventDefault(); setDrag(true); }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={e => {
+                e.preventDefault();
+                setDrag(false);
+                if (e.dataTransfer.files?.[0]) load(e.dataTransfer.files[0]);
+              }}
+              onClick={() => input.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') input.current?.click(); }}
+            >
+              <div className="upload-hero-icon-box">
+                <span className="upload-hero-icon">⚡</span>
               </div>
-            </section>
-          )
+              <h2>Upload Log or Telemetry File</h2>
+              <p className="upload-hero-sub">
+                Drop your file here or click anywhere to browse. Supports Serilog backend logs, JSON-lines, and client telemetry recordings.
+              </p>
+
+              <div className="upload-hero-actions">
+                <button
+                  type="button"
+                  className="primary-btn hero-upload-btn"
+                  disabled={busy}
+                  onClick={e => {
+                    e.stopPropagation();
+                    input.current?.click();
+                  }}
+                >
+                  {busy ? 'Reading and analyzing…' : '📁 Choose File from Computer'}
+                </button>
+              </div>
+
+              <div className="upload-format-chips">
+                <span className="format-chip">.json</span>
+                <span className="format-chip">.jsonl</span>
+                <span className="format-chip">.log</span>
+                <span className="format-chip">.txt</span>
+                <span className="format-chip">.ndjson</span>
+                <span className="format-limit">up to 50 MB</span>
+              </div>
+
+              <div className="upload-privacy-note">
+                🔒 <strong>100% In-browser Local Processing</strong> — your data never leaves your computer.
+              </div>
+            </div>
+            {notice && <p className="notice" role="status" aria-live="polite">{notice}</p>}
+          </section>
+        ) : activeTab === 'telemetry' ? (
+          <TelemetryView
+            telemetryData={telemetryData}
+            datasetName={data.name}
+            datasetBytes={data.bytes}
+            onSwitchToServerLogs={() => switchPage('server_logs')}
+            onUploadClick={() => input.current?.click()}
+            busy={busy}
+          />
         ) : (
-          <>
-            {/* Title and Top Action Presets */}
+          <div className="server-logs-container">
+            {/* Title and Top Actions */}
             <div className="title-row">
               <div>
                 <div className="eyebrow">
@@ -373,31 +418,12 @@ export default function App() {
               </div>
 
               <div className="top-action-bar">
-                <div className="sample-toggle-group" role="group" aria-label="Dataset presets">
-                  <span className="toggle-label">Presets:</span>
-                  <button
-                    type="button"
-                    className={`toggle-btn ${data?.name === 'demo.jsonl' ? 'active' : ''}`}
-                    disabled={busy}
-                    onClick={() => loadSample('demo.jsonl')}
-                    title="Load backend database error logs (deadlocks, missing columns)"
-                  >
-                    <span className="toggle-icon">📄</span> demo.jsonl
-                  </button>
-                  <button
-                    type="button"
-                    className={`toggle-btn ${data?.name === 'telemetry-2026-10-16.json' ? 'active' : ''}`}
-                    disabled={busy}
-                    onClick={() => loadSample('telemetry-2026-10-16.json')}
-                    title="Load client telemetry sample"
-                  >
-                    <span className="toggle-icon">📱</span> telemetry-2026-10-16.json
-                  </button>
-                </div>
-                <button className="primary-btn" disabled={busy} onClick={() => input.current.click()}>
-                  {busy ? 'Reading…' : '↑ Upload file'}
+                <button className="secondary export-btn" onClick={exportReport} title="Download Markdown Report">
+                  📥 Export Report
                 </button>
-                <input aria-label="Upload file" ref={input} type="file" accept=".log,.txt,.jsonl,.ndjson,.json" hidden onChange={e => load(e.target.files[0])} />
+                <button className="primary-btn" disabled={busy} onClick={() => input.current?.click()}>
+                  {busy ? 'Reading…' : '↑ Upload File'}
+                </button>
               </div>
             </div>
 
@@ -425,12 +451,18 @@ export default function App() {
               <p className="warning" role="alert">From date is after To date. Adjust the range to see results.</p>
             )}
 
-            {/* Upload Zone */}
+            {/* Upload Zone / Replace current file */}
             <div
               className={`upload-zone ${drag ? 'drag' : ''}`}
+              style={{ cursor: 'pointer' }}
+              onClick={() => input.current?.click()}
               onDragOver={e => { e.preventDefault(); setDrag(true); }}
               onDragLeave={() => setDrag(false)}
-              onDrop={e => { e.preventDefault(); setDrag(false); load(e.dataTransfer.files[0]); }}
+              onDrop={e => {
+                e.preventDefault();
+                setDrag(false);
+                if (e.dataTransfer.files?.[0]) load(e.dataTransfer.files[0]);
+              }}
             >
               <div className="upload-meta">
                 <span className="upload-icon">⚡</span>
@@ -443,30 +475,11 @@ export default function App() {
                   </p>
                 </div>
               </div>
-              <span className="privacy-badge">🔒 In-browser local processing</span>
+              <span className="privacy-badge">Click or drop to replace</span>
             </div>
-            <p className="notice" role="status" aria-live="polite">{notice}</p>
+            {notice && <p className="notice" role="status" aria-live="polite">{notice}</p>}
 
-            {!data ? (
-              <section className="panel empty-state">
-                <div className="empty-icon-box"><span className="empty-icon">📂</span></div>
-                <h2>Choose a dataset to explore.</h2>
-                <p>Upload your own log file or click a preset below to test immediately:</p>
-                <div className="empty-sample-actions">
-                  <div className="empty-sample-buttons">
-                    <button className="secondary sample-card-btn highlight-card" disabled={busy} onClick={() => loadSample('demo.jsonl')}>
-                      <div className="sample-btn-title">📄 Backend Server Log (demo.jsonl)</div>
-                      <small>Database deadlocks, missing columns & procedures triage (Serilog)</small>
-                    </button>
-                    <button className="secondary sample-card-btn" disabled={busy} onClick={() => loadSample('telemetry-2026-10-16.json')}>
-                      <div className="sample-btn-title">📱 Client Telemetry (telemetry-2026-10-16.json)</div>
-                      <small>User journeys (Shubham Kharche, Amit), button clicks, route transitions, and API 404s</small>
-                    </button>
-                  </div>
-                </div>
-              </section>
-            ) : (
-              <div className="server-logs-page">
+            <div className="server-logs-page">
                 {/* Secondary filters for Server Logs */}
                 <div className="secondary-filters">
                   <div className="filter-view-toggles" role="group" aria-label="Evidence level toggle">
@@ -681,9 +694,8 @@ export default function App() {
                   </div>
                 </section>
               </div>
-            )}
-          </>
-        )}
+            </div>
+          )}
 
         <footer>
           <span>Log & Telemetry analysis · rules are transparent and editable · Indian Standard Time (IST)</span>

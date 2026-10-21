@@ -30,8 +30,7 @@ npm start
 
 ## Workflow
 
-- Upload a JSON-lines `.log`, `.txt`, `.jsonl`, `.ndjson`, or a JSON array `.json` (including Serilog compact logs and client telemetry recordings), up to 50 MB. Parsing runs in a worker. Very large files still use browser memory after parsing.
-- **Preset sample at the top**: Click `demo.jsonl` to load the included backend log dataset without manual file selection.
+- Upload a JSON-lines `.log`, `.txt`, `.jsonl`, `.ndjson`, or a JSON array `.json` (including Serilog compact logs and client telemetry recordings), up to 50 MB. Parsing runs with Web Worker + instant direct fallback.
 - **From / To date filters are at the top.** Boundaries are inclusive UTC dates and apply to every metric, chart, insight, issue and evidence view. Latest day / Last 7 log days are anchored to the latest timestamp in the uploaded file, not today. All dates clears only the date range. Reset all clears every filter.
 - **Errors Only vs All Records toggle**: Easily switch between failure triage (404s, 500s, exceptions) and the complete event stream (UI interactions, clicks, route transitions, and API requests).
 - Search, level and category filters also apply to the whole dashboard. An “Inspect related logs” action further narrows only the evidence list.

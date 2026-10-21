@@ -32,7 +32,6 @@ export default function TelemetryView({
   datasetName,
   datasetBytes,
   onSwitchToServerLogs,
-  onLoadSample,
   onUploadClick,
   busy
 }) {
@@ -144,34 +143,12 @@ export default function TelemetryView({
         </div>
 
         <div className="studio-header-right">
-          <div className="sample-presets">
-            <span className="preset-label">Presets:</span>
-            <button
-              type="button"
-              className={`preset-btn ${datasetName?.includes('telemetry') ? 'active' : ''}`}
-              disabled={busy}
-              onClick={() => onLoadSample?.('telemetry-2026-10-16.json')}
-              title="Load client telemetry sample recording"
-            >
-              📱 telemetry-2026-10-16.json
-            </button>
-            <button
-              type="button"
-              className={`preset-btn ${datasetName?.includes('demo') ? 'active' : ''}`}
-              disabled={busy}
-              onClick={() => onLoadSample?.('demo.jsonl')}
-              title="Load backend server error logs"
-            >
-              📄 demo.jsonl
-            </button>
-          </div>
-
           <div className="studio-actions">
             <button type="button" className="action-btn secondary" onClick={downloadReport} title="Export markdown report">
               📥 Export Report
             </button>
             <button type="button" className="action-btn primary" onClick={onUploadClick} disabled={busy}>
-              {busy ? 'Reading…' : '↑ Upload JSON'}
+              {busy ? 'Reading…' : '↑ Upload File'}
             </button>
           </div>
         </div>
